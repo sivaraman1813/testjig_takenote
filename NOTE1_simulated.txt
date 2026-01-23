@@ -1,0 +1,1 @@
+This is a simulated transfer file for testing purposes.Ah, I see! You want the cortections part to only show the position if the word that is wrong, not the axtual wrong word itselfbut you want it to just say "Position 5" (or similar) to indicate which word is wrong, not the word itself.
