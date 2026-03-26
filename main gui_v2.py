@@ -13,6 +13,7 @@ import numpy as np
 import socket
 import openpyxl
 import datetime
+import threading
 
 # macOS-specific Tkinter import with error handling
 try:
@@ -53,6 +54,10 @@ except ImportError:
     BLUETOOTH_AVAILABLE = False
 
 # Try to import the conversion module
+# Ensure script directory is on path so Hex2Txt module is always found
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+
+# Try to import the conversion module
 try:
     import Hex2TxtTakenote_ENG1_aug_2021
     CONVERTER_AVAILABLE = True
@@ -86,6 +91,7 @@ DRAG_SIZE = 10       # Pixels from top for drag handle
 stored_device = ""
 stored_date = ""
 stored_tester = ""
+TESTING_ACTIVE = False
 
 
 
@@ -377,44 +383,88 @@ def capital():
     time.sleep(0.5)
 # ===== TEST FUNCTION =====
 def test_individual(txt_widget, status_label):
-    """Test individual text from a Tkinter Text widget."""
-    global board
+    global board, TESTING_ACTIVE
+
     if board is None:
         messagebox.showwarning("Board Error", "Arduino not connected. Connect first.")
         return
+
+    if TESTING_ACTIVE:
+        messagebox.showinfo("Already Running", "Test is already in progress.")
+        return
     
-    text_content = txt_widget.get("1.0", tk.END)
-    count = 0
-    num_flog = 0
-    
-    file_open()
-    time.sleep(1)
-    
-    for char in text_content[:-1]:
-        if char.islower():
-            if num_flog == 1: num_al()
-            num_flog = 0
-            outled = alplow_brl(char)
-        elif char.isupper():
-            if num_flog == 1: num_al()
-            num_flog = 0
-            capital()
-            outled = alpup_brl(char)
-        elif char.isdigit():
-            if num_flog == 0: al_num()
-            num_flog = 1
-            outled = num_brl(char)
-        else:
-            outled = alplow_brl(char)
-        
-        dot_led(outled)
-        count += 1
-        if count % 10 == 0:
-            txt_widget.update()
-    
-    file_close()
-    status_label.config(text=f"Hardware testing complete: {count} characters")
-    print(f"✅ Hardware testing completed: {count} characters")
+    def _set_test_btn_stop_mode():
+     canvas = btn_test_all.children["!canvas"]
+     canvas.itemconfig(canvas.btn_text, text="STOP TEST")
+     canvas.itemconfig(canvas.btn_bg, fill="#e4666d", outline="#e4666d")
+     canvas.button_state = 'normal'
+
+    def _set_test_btn_test_mode():
+     canvas = btn_test_all.children["!canvas"]
+     canvas.itemconfig(canvas.btn_text, text="TEST TAKENOTE")
+     canvas.itemconfig(canvas.btn_bg, fill="#005b96", outline="#005b96")
+     canvas.button_state = 'normal'
+
+    def run_test():
+        global TESTING_ACTIVE
+        TESTING_ACTIVE = True
+
+        # Update button states on main thread
+        # Switch button to STOP mode
+        window.after(0, lambda: _set_test_btn_stop_mode())
+
+        text_content = txt_widget.get("1.0", tk.END)
+        count = 0
+        num_flog = 0
+
+        file_open()
+        time.sleep(1)
+
+        for char in text_content[:-1]:
+            if not TESTING_ACTIVE:
+                print("⛔ Testing stopped by user.")
+                window.after(0, lambda: status_label.config(text="Testing stopped."))
+                break
+
+            if char.islower():
+                if num_flog == 1: num_al()
+                num_flog = 0
+                outled = alplow_brl(char)
+            elif char.isupper():
+                if num_flog == 1: num_al()
+                num_flog = 0
+                capital()
+                outled = alpup_brl(char)
+            elif char.isdigit():
+                if num_flog == 0: al_num()
+                num_flog = 1
+                outled = num_brl(char)
+            else:
+                outled = alplow_brl(char)
+
+            dot_led(outled)
+            count += 1
+
+            # Update status every 10 chars (safe via window.after)
+            if count % 10 == 0:
+                c = count
+                window.after(0, lambda c=c: status_label.config(
+                    text=f"Testing... {c} characters sent"))
+
+        file_close()
+        TESTING_ACTIVE = False
+
+        # Restore button states
+        # Restore button to TEST mode
+        window.after(0, lambda: _set_test_btn_test_mode())
+        final_count = count
+        if TESTING_ACTIVE is False and final_count > 0:
+            window.after(0, lambda: status_label.config(
+                text=f"Hardware testing complete: {final_count} characters"))
+
+    # Launch in background thread so GUI stays responsive
+    t = threading.Thread(target=run_test, daemon=True)
+    t.start()
 
 
 #---------------------------Bluetooth Transfer Functions------------------
@@ -463,7 +513,7 @@ def parse_and_save(data_stream):
             with open(clean_name, 'w') as f:
                 f.write(content.strip())
             abs_path = os.path.abspath(clean_name)
-            saved_files.append(clean_name)
+            saved_files.append(abs_path)          # ✅ FIXED: was clean_name
             print(f"✅ Saved file: {abs_path}")
         except Exception as e:
             print(f"❌ Error saving {clean_name}: {e}")
@@ -472,6 +522,8 @@ def parse_and_save(data_stream):
         print("✅ All files transferred successfully.")
     else:
         print("⚠️  File transfer may be incomplete (missing final marker).")
+    
+    return saved_files
     
     return saved_files
 
@@ -606,6 +658,9 @@ def display_csv(file_path, text_widget):
 
 def convert_hex_to_text(hex_content):
     """Convert hex data to readable text using Hex2TxtTakenote_ENG1_aug_2021"""
+    print(f"🔄 convert_hex_to_text called | CONVERTER_AVAILABLE={CONVERTER_AVAILABLE} | content length={len(hex_content)}")
+    print(f"🔄 Content preview: {repr(hex_content[:60])}")
+    
     if not CONVERTER_AVAILABLE:
         print("⚠️  Hex converter not available")
         return hex_content
@@ -1247,67 +1302,31 @@ def simulate_transfer():
 #         messagebox.showerror("File Processing Error", f"Error processing transferred file: {e}")
 
 def process_transferred_files(file_list):
-    """Process transferred files and load the latest into the typed area."""
+    """Process the transferred files and load them into the typed area only"""
     if not file_list:
-        print("⚠️ process_transferred_files: empty file list")
         return
 
-    # Resolve absolute paths so getmtime works regardless of cwd
-    abs_files = []
-    for f in file_list:
-        abs_path = os.path.abspath(f)
-        if os.path.exists(abs_path):
-            abs_files.append(abs_path)
-        else:
-            print(f"⚠️ File not found, skipping: {abs_path}")
+    def note_number(fname):                                    # ✅ FIXED: was os.path.getmtime
+        match = re.search(r'(\d+)', os.path.basename(fname))
+        return int(match.group(1)) if match else 0
 
-    if not abs_files:
-        messagebox.showerror("File Error", "None of the transferred files could be found on disk.")
-        status_label.config(text="No files found on disk")
-        return
-
-    # Pick the most recently modified file
-    latest_file = max(abs_files, key=os.path.getmtime)
-    print(f"📂 Latest file selected: {latest_file}")
+    latest_file = max(file_list, key=note_number)
 
     try:
-        with open(latest_file, 'r', encoding='utf-8', errors='replace') as f:
+        with open(latest_file, 'r', encoding='utf-8') as f:
             content = f.read()
 
-        print(f"📄 Raw content length: {len(content)} chars")
+        content = convert_hex_to_text(content)
 
-        # Try the custom converter first
-        if CONVERTER_AVAILABLE:
-            converted = convert_hex_to_text(content)
-            if converted and converted != content:
-                print("✅ Converted via Hex2TxtTakenote module")
-                content = converted
-
-        # Fallback: if content looks like hex, decode with bytes.fromhex
-        if content:
-            stripped = content.strip().replace(' ', '').replace('\n', '').replace('\r', '')
-            if all(c in '0123456789abcdefABCDEF' for c in stripped) and len(stripped) % 2 == 0:
-                try:
-                    decoded = bytes.fromhex(stripped).decode('utf-8', errors='replace')
-                    print("✅ Decoded via bytes.fromhex fallback")
-                    content = decoded
-                except Exception as hex_err:
-                    print(f"⚠️ bytes.fromhex fallback failed: {hex_err}")
-
-        print(f"📝 Final content length: {len(content)} chars — first 80 chars: {content[:80]!r}")
-
-        # Load into typed area
         typed1.delete("1.0", tk.END)
         typed1.insert(tk.END, content)
-        window.update()  # Force UI refresh so text appears immediately
 
+        print(f"✅ Loaded and converted latest file into typed area: {os.path.basename(latest_file)}")
         status_label.config(text=f"Typed area loaded: {os.path.basename(latest_file)}")
-        print(f"✅ Typed area updated with: {latest_file}")
 
     except Exception as e:
         print(f"❌ Error processing {latest_file}: {e}")
-        messagebox.showerror("File Processing Error", f"Could not load file:\n{latest_file}\n\nError: {e}")
-        status_label.config(text="Error loading transferred file")
+        messagebox.showerror("File Processing Error", f"Error processing latest file: {e}")
 
 # def compare_user_input():
 #     """Compare the typed text with the reference text"""
@@ -1437,6 +1456,11 @@ braille_map = {
 " ": "0"                  # Space
 
 }
+
+def stop_testing():
+    global TESTING_ACTIVE
+    TESTING_ACTIVE = False
+    print("⛔ Stop requested.")
 
 def compare_user_input():
     global analysis_ready,stored_device,  stored_tester
@@ -1670,105 +1694,279 @@ def clear_all():
 
 
 def save_results():
-    """Save the analysis results into XLSX with proper structured tables"""
+    """Save results to XLSX — reference & typed text side-by-side in equal columns."""
     results = result_text.get("1.0", tk.END).strip()
     if not results:
         messagebox.showwarning("No Results", "No analysis results to save")
         return
 
     try:
-        timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
-        filename = f"Analysis_{timestamp}.xlsx"
+        from openpyxl.styles import Border, Side
 
-        # Create workbook
+        timestamp = datetime.now().strftime("%d%m%Y_%H%M%S")
+        filename  = f"Analysis_{timestamp}.xlsx"
+
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "Analysis Report"
 
-        row_idx = 1
+        # ── column layout ─────────────────────────────────────────────────────
+        # Col 1 = label(meta)  Col 2 = Reference text  Col 3 = Typed text
+        # Col 4 = value(meta)  (meta rows span 3-4 for value when needed)
+        # For text section: col 1 & 2 = Reference (merged), col 3 & 4 = Typed (merged)
+        ws.column_dimensions['A'].width = 20   # meta label / ref-half
+        ws.column_dimensions['B'].width = 45   # ref text content
+        ws.column_dimensions['C'].width = 20   # meta value / typed-half
+        ws.column_dimensions['D'].width = 45   # typed text content
 
-        # --- Save Summary Overlay (Total Errors and Accuracy) ---
-        overlay_text = summary_overlay.cget("text").strip()
-        if overlay_text:
-            for line in overlay_text.splitlines():
-                if line.strip():
-                    cell = ws.cell(row=row_idx, column=1, value=line.strip())
-                    cell.font = Font(bold=True, size=11)
-                    if "Total Errors" in line:
-                        cell.fill = PatternFill("solid", fgColor="FFE6E6")  # Light red
-                    elif "Accuracy" in line:
-                        cell.fill = PatternFill("solid", fgColor="E6FFE6")  # Light green
-                    row_idx += 1
-            row_idx += 1  # blank space after summary
+        thin  = Side(style='thin',   color='CCCCCC')
+        bdr   = Border(left=thin, right=thin, top=thin, bottom=thin)
+        no_b  = Border()
 
-        # --- Also save from results text (backup) ---
-        for line in results.splitlines():
-            if line.startswith("Total Errors") or line.startswith("Accuracy"):
-                if not overlay_text:  # Only if overlay wasn't captured
-                    cell = ws.cell(row=row_idx, column=1, value=line)
-                    cell.font = Font(bold=True)
-                    row_idx += 1
+        def fl(h): return PatternFill('solid', fgColor=h)
 
-        row_idx += 1  # blank space
+        def c(r, col, val, bold=False, size=10, fc="1A1A1A", bg=None,
+              ha="left", va="center", wrap=False, italic=False, border=True):
+            cl = ws.cell(row=r, column=col, value=val)
+            cl.font      = Font(name="Calibri", bold=bold, size=size,
+                                color=fc, italic=italic)
+            cl.alignment = Alignment(horizontal=ha, vertical=va,
+                                     wrap_text=wrap, indent=1)
+            if bg:     cl.fill   = fl(bg)
+            cl.border  = bdr if border else no_b
+            return cl
 
-        # --- Summary Table ---
+        def rh(r, h): ws.row_dimensions[r].height = h
+
+        def full_banner(r, text, bg="03396C", fg="FFFFFF", size=12, h=28):
+            c(r, 1, text, bold=True, size=size, fc=fg, bg=bg,
+              ha="center", va="center", border=False)
+            ws.merge_cells(start_row=r, start_column=1,
+                           end_row=r,   end_column=4)
+            rh(r, h)
+            return r + 1
+
+        def spacer(r, h=6):
+            for col in range(1, 5):
+                cl = ws.cell(row=r, column=col)
+                cl.fill   = fl("F5F5F5")
+                cl.border = no_b
+            rh(r, h)
+            return r + 1
+
+        # ── parse overlay for meta ────────────────────────────────────────────
+        overlay = summary_overlay.cget("text").strip()
+        meta = {}
+        for ln in overlay.splitlines():
+            if ':' in ln:
+                k, _, v = ln.partition(':')
+                meta[k.strip()] = v.strip()
+
+        total_errors = meta.get("Total Errors", "0")
+        accuracy     = meta.get("Accuracy",     "—")
+        s_device     = meta.get("Device Name",  stored_device or "—")
+        s_tester     = meta.get("Tested By",    stored_tester or "—")
+        generated    = datetime.now().strftime("%d-%m-%Y %H:%M:%S")
+
+        r = 1
+
+        # ══════════════════════════════════════════════════════════════════════
+        # 1. TITLE
+        # ══════════════════════════════════════════════════════════════════════
+        r = full_banner(r, "TestJig  —  Analysis Report",
+                        bg="03396C", size=14, h=32)
+        r = spacer(r, 4)
+
+        # ══════════════════════════════════════════════════════════════════════
+        # 2. TEST DETAILS  (2×2 meta grid)
+        # ══════════════════════════════════════════════════════════════════════
+        r = full_banner(r, "  Test Details", bg="1B6CA8", size=10, h=20)
+
+        def meta_row(r, l1, v1, l2, v2,
+                     vbg1="FFFFFF", vbg2="FFFFFF",
+                     vbold=False, vfc="1A1A1A", vsize=10):
+            c(r, 1, l1, bold=True, size=9, fc="555555", bg="EBF2FA", ha="right")
+            c(r, 2, v1, bold=vbold, size=vsize, fc=vfc, bg=vbg1)
+            c(r, 3, l2, bold=True, size=9, fc="555555", bg="EBF2FA", ha="right")
+            c(r, 4, v2, bold=vbold, size=vsize, fc=vfc, bg=vbg2)
+            rh(r, 18)
+            return r + 1
+
+        r = meta_row(r, "Device Name", s_device,  "Tested By",  s_tester)
+        r = meta_row(r, "Test Date",   stored_date or generated[:10],
+                        "Generated",  generated)
+        r = meta_row(r, "Total Errors", total_errors, "Accuracy", accuracy,
+                     vbg1="FFF0F0", vbg2="F0FFF0",
+                     vbold=True,
+                     vfc="CC0000" if total_errors != "0" else "1A7A1A",
+                     vsize=11)
+        r = spacer(r, 10)
+
+        # ══════════════════════════════════════════════════════════════════════
+        # 3. REFERENCE TEXT  |  TYPED TEXT  (equal side-by-side, same row)
+        # ══════════════════════════════════════════════════════════════════════
+
+        # Sub-headers
+        c(r, 1, "  Reference Text", bold=True, size=10,
+          fc="FFFFFF", bg="2D6A9F", ha="left", va="center", border=False)
+        ws.merge_cells(start_row=r, start_column=1,
+                       end_row=r,   end_column=2)
+        c(r, 3, "  Typed / Transferred Text", bold=True, size=10,
+          fc="FFFFFF", bg="2D7D5A", ha="left", va="center", border=False)
+        ws.merge_cells(start_row=r, start_column=3,
+                       end_row=r,   end_column=4)
+        rh(r, 22)
+        r += 1
+
+        # Text content — both in the SAME row, equal width
+        ref_content   = txt1.get("1.0", tk.END).strip()   or "(no reference text)"
+        typed_content = typed1.get("1.0", tk.END).strip() or "(no typed text)"
+
+        # Height based on the longer of the two texts
+        max_len    = max(len(ref_content), len(typed_content))
+        wrap_lines = max(1, max_len // 55 + 1)
+        h          = min(max(wrap_lines * 15, 60), 500)
+
+        ref_cl = ws.cell(row=r, column=1, value=ref_content)
+        ref_cl.font      = Font(name="Calibri", size=11, color="1A1A1A")
+        ref_cl.alignment = Alignment(horizontal="left", vertical="top",
+                                     wrap_text=True, indent=1)
+        ref_cl.fill      = fl("FAFCFF")
+        ref_cl.border    = bdr
+        ws.merge_cells(start_row=r, start_column=1,
+                       end_row=r,   end_column=2)
+
+        typ_cl = ws.cell(row=r, column=3, value=typed_content)
+        typ_cl.font      = Font(name="Calibri", size=11, color="1A1A1A")
+        typ_cl.alignment = Alignment(horizontal="left", vertical="top",
+                                     wrap_text=True, indent=1)
+        typ_cl.fill      = fl("F5FFF8")
+        typ_cl.border    = bdr
+        ws.merge_cells(start_row=r, start_column=3,
+                       end_row=r,   end_column=4)
+
+        rh(r, h)
+        r += 1
+        r = spacer(r, 10)
+
+        # ══════════════════════════════════════════════════════════════════════
+        # 4. SUMMARY TABLE  (word-level errors)
+        # ══════════════════════════════════════════════════════════════════════
         if "=== SUMMARY TABLE ===" in results:
-            ws.cell(row=row_idx, column=1, value="Summary Table").font = Font(bold=True, size=12)
-            row_idx += 1
+            r = full_banner(r, "  Word-Level Summary", bg="1B6CA8", size=10, h=20)
+
+            hdr_cols = ["Original Word", "Typed Word", "Error Description"]
+            hdr_spans = [(1,1), (2,2), (3,4)]   # col ranges
+            for label, (c1, c2) in zip(hdr_cols, hdr_spans):
+                c(r, c1, label, bold=True, size=9,
+                  fc="FFFFFF", bg="2E6DA4", ha="center")
+                if c1 != c2:
+                    ws.merge_cells(start_row=r, start_column=c1,
+                                   end_row=r,   end_column=c2)
+            rh(r, 20); r += 1
 
             lines = results.splitlines()
-            summary_start = lines.index("=== SUMMARY TABLE ===") + 2  # skip separator line
-            summary_end = summary_start
-            while summary_end < len(lines) and not lines[summary_end].startswith("==="):
-                summary_end += 1
+            start = lines.index("=== SUMMARY TABLE ===") + 1
+            while start < len(lines) and set(lines[start].strip()) <= {'-', '+', ''}:
+                start += 1
 
-            for i, line in enumerate(lines[summary_start:summary_end]):
-                if '|' in line:
-                    columns = [col.strip() for col in line.split("|") if col.strip() != ""]
-                    for col_idx, val in enumerate(columns, start=1):
-                        cell = ws.cell(row=row_idx, column=col_idx, value=val)
-                        cell.alignment = Alignment(horizontal='center')
-                        if i == 0:  # header row
-                            cell.font = Font(bold=True)
-                            cell.fill = PatternFill("solid", fgColor="DDDDDD")
-                    row_idx += 1
-            row_idx += 2  # blank space
+            ri = 0
+            for ln in lines[start:]:
+                if ln.strip().startswith("==="): break
+                if '|' in ln:
+                    cols = [x.strip() for x in ln.split("|") if x.strip()]
+                    if not cols: continue
+                    bg = "EEF4FA" if ri % 2 else "FFFFFF"
+                    c(r, 1, cols[0] if len(cols) > 0 else "", size=9, bg=bg)
+                    c(r, 2, cols[1] if len(cols) > 1 else "", size=9, bg=bg)
+                    val3 = cols[2] if len(cols) > 2 else ""
+                    c(r, 3, val3, size=9, bg=bg)
+                    ws.merge_cells(start_row=r, start_column=3,
+                                   end_row=r,   end_column=4)
+                    rh(r, 16); r += 1; ri += 1
 
-        # --- Detailed Summary Table ---
+            r = spacer(r, 10)
+
+        # ══════════════════════════════════════════════════════════════════════
+        # 5. DETAILED SUMMARY TABLE  (braille key analysis)
+        # ══════════════════════════════════════════════════════════════════════
         if "=== DETAILED SUMMARY ===" in results:
-            ws.cell(row=row_idx, column=1, value="Detailed Summary").font = Font(bold=True, size=12)
-            row_idx += 1
+            r = full_banner(r, "  Detailed Braille-Key Summary",
+                            bg="1B6CA8", size=10, h=20)
 
-            detail_start = lines.index("=== DETAILED SUMMARY ===") + 2  # skip separator
-            detail_end = detail_start
-            while detail_end < len(lines) and not lines[detail_end].startswith("==="):
-                detail_end += 1
+            det_hdrs = ["Error", "Correct Keys", "Wrong Keys",
+                        "Missed Keys", "Frequency"]
+            for ci, label in enumerate(det_hdrs, 1):
+                c(r, ci if ci <= 4 else 4, label,
+                  bold=True, size=9, fc="FFFFFF", bg="2E6DA4", ha="center")
+            # squeeze 5 logical cols into 4 Excel cols:
+            # col1=Error, col2=Correct, col3=Wrong, col4=Missed+Freq merged
+            rh(r, 20); r += 1
 
-            for i, line in enumerate(lines[detail_start:detail_end]):
-                if '|' in line:
-                    columns = [col.strip() for col in line.split("|") if col.strip() != ""]
-                    for col_idx, val in enumerate(columns, start=1):
-                        cell = ws.cell(row=row_idx, column=col_idx, value=val)
-                        cell.alignment = Alignment(horizontal='center')
-                        if i == 0:  # header row
-                            cell.font = Font(bold=True)
-                            cell.fill = PatternFill("solid", fgColor="DDDDDD")
-                    row_idx += 1
+            lines = results.splitlines()
+            start = lines.index("=== DETAILED SUMMARY ===") + 1
+            while start < len(lines) and set(lines[start].strip()) <= {'-', '+', ''}:
+                start += 1
 
-        # --- Auto column width ---
-        for col_cells in ws.columns:
-            length = max(len(str(cell.value)) if cell.value else 0 for cell in col_cells)
-            ws.column_dimensions[get_column_letter(col_cells[0].column)].width = length + 4
+            ri = 0
+            for ln in lines[start:]:
+                if ln.strip().startswith("==="): break
+                if '|' in ln:
+                    cols = [x.strip() for x in ln.split("|") if x.strip()]
+                    if not cols: continue
+                    bg = "EEF4FA" if ri % 2 else "FFFFFF"
+                    c(r, 1, cols[0] if len(cols) > 0 else "", size=9, bg=bg)
+                    c(r, 2, cols[1] if len(cols) > 1 else "", size=9, bg=bg, ha="center")
+                    c(r, 3, cols[2] if len(cols) > 2 else "", size=9, bg=bg, ha="center")
+                    # Missed keys + frequency in col 4
+                    missed = cols[3] if len(cols) > 3 else ""
+                    freq   = cols[4] if len(cols) > 4 else ""
+                    c(r, 4,
+                      f"{missed}  (×{freq})" if missed and freq else missed or freq,
+                      size=9, bg=bg, ha="center")
+                    rh(r, 16); r += 1; ri += 1
 
-        # Save workbook
+            r = spacer(r, 10)
+
+        # ══════════════════════════════════════════════════════════════════════
+        # 6. RESULT SUMMARY BAR
+        # ══════════════════════════════════════════════════════════════════════
+        try:    acc_val = float(accuracy.replace('%', '').strip())
+        except: acc_val = 100.0
+
+        acc_bg = "E6FFE6" if acc_val >= 90 else ("FFFBE6" if acc_val >= 70 else "FFE6E6")
+        acc_fc = "1A7A1A" if acc_val >= 90 else ("8B6914" if acc_val >= 70 else "CC0000")
+        status = "PASS  ✓" if acc_val >= 90 else "NEEDS REVIEW  ⚠"
+
+        cl = ws.cell(row=r, column=1,
+                     value=f"  Accuracy : {accuracy}     |     "
+                           f"Total Errors : {total_errors}     |     {status}")
+        cl.font      = Font(name="Calibri", bold=True, size=12, color=acc_fc)
+        cl.fill      = fl(acc_bg)
+        cl.alignment = Alignment(horizontal="center", vertical="center")
+        cl.border    = no_b
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+        rh(r, 30); r += 1
+        r = spacer(r, 4)
+
+        # footer
+        cl = ws.cell(row=r, column=1,
+                     value=f"  Generated by TestJig  |  {generated}")
+        cl.font      = Font(name="Calibri", size=8, italic=True, color="999999")
+        cl.fill      = fl("F5F5F5")
+        cl.alignment = Alignment(horizontal="center", vertical="center")
+        cl.border    = no_b
+        ws.merge_cells(start_row=r, start_column=1, end_row=r, end_column=4)
+        rh(r, 16)
+
+        ws.freeze_panes = "A2"
+
         wb.save(filename)
-
         messagebox.showinfo("Saved", f"Results saved to {filename}")
         status_label.config(text=f"Results saved: {filename}")
 
     except Exception as e:
         messagebox.showerror("Save Error", f"Failed to save results: {e}")
-
 #---------------------------GUI Setup-------------------------------
 print("🚀 Initializing TakeNote GUI...")
 
@@ -2350,10 +2548,18 @@ def create_rounded_button(parent, text, command, bg_color,
 
 
 # Create rounded buttons
+def _test_or_stop():
+    if TESTING_ACTIVE:
+        stop_testing()
+    else:
+        test_individual(txt1, status_label)
+
 btn_test_all = create_rounded_button(typed_buttons_frame, "TEST TAKENOTE",
-                                     lambda: test_individual(txt1, status_label), 
+                                     _test_or_stop,
                                      '#005b96', width=160)
 btn_test_all.pack(side=tk.LEFT, padx=5)
+
+
 
 btn_transfer = create_rounded_button(typed_buttons_frame, "TRANSFER FILES", transfer_files,
                                      "#5694b3", width=160)
