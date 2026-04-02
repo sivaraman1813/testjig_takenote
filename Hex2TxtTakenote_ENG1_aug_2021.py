@@ -173,6 +173,7 @@
 # 	new_file.close() # close the text file
 
 # #englishGrade1Convert("note5.txt", "note5_out.txt")
+
 import os, sys
 
 # ****** Declaration of Alphabets and corresponding Hex codes ***********
@@ -188,7 +189,7 @@ no_index = ['210','230','218','21c','214','238','23c','234','228','22c']
 # ****** Declaration of Special Characters (without sign) and corresponding Hex codes ***********
 
 sp_chr1 = ['.',',',';',':','!','?',"'",'-','"','(',')','/','*','@','+','%','&']
-sp_chr_index1 = ['226','220','260','224','264','262','240','242','246','276','26e','248','244','24c','24a','21a','27a']
+sp_chr_index1 = ['226','220','260','224','264','262','20c','242','246','276','26e','248','244','24c','24a','21a','27a']
 
 # ****** Declaration of Special Characters (with sign) and corresponding Hex codes **************
 
@@ -275,7 +276,7 @@ def englishGrade1Convert(file_str_input, file_str_output):
 
     new_file = open(file_str_output, "w+")
 
-    for i in range(0, len(data) - 1, 3):
+    for i in range(0, len(data) , 3):
         Hex = data[i:i+3]
 
         # *********************** Control Code Processing **********************
@@ -309,9 +310,7 @@ def englishGrade1Convert(file_str_input, file_str_output):
         elif Hex == '204':      # Sign for brackets / quotes
             sign = 1
             continue
-        elif Hex == '20c':      # Apostrophe — already in sp_chr1, no sign needed
-            sign = 0
-            continue
+        
         elif Hex == '20e':      # Forward slash — already in sp_chr1, no sign needed
             sign = 0
             continue
